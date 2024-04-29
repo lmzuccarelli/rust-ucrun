@@ -1,6 +1,6 @@
 ## Overview
 
-A OCI runtime thats used to execute ops nanovm unikerenels in a Kuberenetes/OpensShift cluter
+A OCI runtime thats used to execute ops nanovm unikerenels in a Kuberenetes/OpenShift cluster
 
 ### Unikernels 
 
@@ -8,11 +8,16 @@ So why unikernels
 
 - Unikernels are specialized, single-address-space machine images constructed by using library operating systems. 
 - They are lightweight, secure, and fast to boot.
-- They over improved isolation
+- They offer improved isolation
 
 ### OCI Runtime
 
-This procect is an OCI runtime can be a drop in replacement for crun, used in CRI-O and Podman
+This project is an OCI runtime that is used together with crun (used as OCI runtime in CRI-O and Podman).
+Calls are made to this runtime by virtue of a RuntimeClass in Kubernetes/OpenShift.
+
+A recommended approach would be to use dedicated node/s for running unikernels. This is to ensure that the unikernels are not competing with other workloads on the same node.
+This approach also lends itself to edge environments where disk space and memeory are limited.
+
 A detailed setup and howto can be found [here]()
 
 ### Features
