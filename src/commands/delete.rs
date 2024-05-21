@@ -1,45 +1,110 @@
+use crate::api::schema::*;
+use crate::common::utils::*;
 use crate::runtime::crun::*;
+use crate::Logging;
 use anyhow::ensure;
 use anyhow::Result;
-use serde::Deserialize;
+use std::env;
 use std::ffi::OsStr;
-use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-pub fn delete(args: &liboci_cli::Delete, raw_args: &[impl AsRef<OsStr>]) -> Result<()> {
-    // the container might not exist because creation failed midway through, so we ignore errors
-    let root_path = get_root_path(&args.container_id).ok();
+// does what it says
+pub fn delete(
+    log: &Logging,
+    args: &liboci_cli::Delete,
+    raw_args: &[impl AsRef<OsStr>],
+) -> Result<()> {
+    let unikernel_name = get_unikernel_name(log, &args.container_id);
+    log.info(&format!("deleting container: {}", args.container_id,));
 
-    crun(raw_args)?;
+    crun(log, raw_args)?;
 
-    if let Some(root_path) = root_path {
-        let private_dir_path: PathBuf = root_path.parent().unwrap().to_path_buf().try_into()?;
-
-        let image_dir_path = private_dir_path.join("root/ucrun/image");
-        let image_file_path = image_dir_path.join("image");
-        fs::remove_dir(image_file_path)?;
-        fs::remove_dir(image_dir_path)?;
+    if unikernel_name.is_ok() {
+        let un = unikernel_name.unwrap().clone();
+        log.info(&format!("deleting unikernel: {}", &un));
+        kill_process(log, &un)?;
+    } else {
+        log.error("could not find unikernel name");
     }
 
     Ok(())
 }
 
-fn get_root_path(container_id: &str) -> Result<PathBuf> {
-    let output = Command::new("crun")
-        .arg("state")
-        .arg(container_id)
-        .stderr(Stdio::null())
-        .output()?;
-
-    ensure!(output.status.success());
-
-    #[derive(Deserialize)]
-    struct ContainerState {
-        rootfs: PathBuf,
+// get_unikernel_name returns the unikernel name from the file overlay
+fn get_unikernel_name(log: &Logging, container_id: &str) -> Result<String> {
+    // auto detect arch
+    let mut ep = get_unikernel_config(log);
+    if ep.is_err() {
+        log.error("unikernel config not found");
+        return Err(anyhow::anyhow!("unikernel config not found"));
+    } else {
+        let mut hld = ep.unwrap();
+        hld.container_id = container_id.to_string();
+        // set $HOME - this is extremely important for ops nanovm
+        env::set_var("HOME", hld.home.clone());
+        log.debug(&format!("setting home envar {:#?}", hld.home));
+        ep = Ok(hld);
     }
 
-    let state: ContainerState = serde_json::from_slice(&output.stdout)?;
+    let config_path = get_config_path(log, ep.unwrap());
+    log.debug(&format!("config_path {:#?}", config_path.clone()));
+    let config = std::fs::read_to_string(config_path.clone());
+    if config.as_ref().ok().is_some() {
+        let oci_config: OCIConfig = serde_json::from_str(&config.unwrap())?;
+        let envs = oci_config.process.env;
+        let service_name_pos = envs.iter().position(|e| e.contains("SERVICE_NAME"));
+        if service_name_pos.is_some() {
+            let service_name = envs[service_name_pos.unwrap()]
+                .split("=")
+                .collect::<Vec<&str>>()[1];
+            Ok(service_name.to_string())
+        } else {
+            log.error("SERVICE_NAME not found in env");
+            Ok("".to_string())
+        }
+    } else {
+        log.error(&format!("could not find {:#?} config.json", container_id));
+        Ok("".to_string())
+    }
+}
 
-    Ok(state.rootfs.try_into()?)
+// kill_process kills the unikernel process
+fn kill_process(log: &Logging, unikernel_name: &str) -> Result<()> {
+    let ps_child = Command::new("ps")
+        .arg("-ef")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let grep_child_one = Command::new("grep")
+        .arg(unikernel_name)
+        .stdin(Stdio::from(ps_child.stdout.unwrap()))
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let grep_child_two = Command::new("grep")
+        .arg("-v")
+        .arg("grep")
+        .stdin(Stdio::from(grep_child_one.stdout.unwrap()))
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let output = grep_child_two.wait_with_output().unwrap();
+    let result = String::from_utf8_lossy(&output.stdout);
+    let process = result.split("\n").collect::<Vec<&str>>();
+    for p in process {
+        if p.contains(unikernel_name) {
+            let ps = p.split_whitespace().collect::<Vec<&str>>();
+            let pid = ps[1];
+            let kill_child = Command::new("kill").arg("-15").arg(pid).spawn().unwrap();
+            let kill_output = kill_child.wait_with_output().unwrap();
+            let kill_result = String::from_utf8_lossy(&kill_output.stdout);
+            log.info(&format!(
+                "terminating unikernel with pid {} {}",
+                pid, kill_result
+            ));
+            ensure!(kill_output.status.success());
+        }
+    }
+    Ok(())
 }

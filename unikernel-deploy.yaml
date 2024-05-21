@@ -1,0 +1,23 @@
+version: '3'
+services:
+  redis-mq:
+    image: "192.168.1.27:5000/unikernel-tracker:latest"
+    environment:
+      SERVICE_NAME: "redis-server" 
+      PORT: "6379"
+
+  publisher:
+    image: "192.168.1.27:5000/unikernel-tracker:latest"
+    depends-on:
+      redis-mq
+    environment:
+      SERVICE_NAME: "rust-redis-publisher" 
+      PORT: "8080"
+
+  subscriber:
+    image: "192.168.1.27:5000/unikernel-tracker:latest"
+    depends-on:
+      redis-mq
+    environment:
+      SERVICE_NAME: "rust-redis-subscriber" 
+      PORT: "8081"

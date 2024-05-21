@@ -16,7 +16,7 @@ This project is an OCI runtime that is used together with crun (used as OCI runt
 Calls are made to this runtime by virtue of a RuntimeClass in Kubernetes/OpenShift.
 
 A recommended approach would be to use dedicated node/s for running unikernels. This is to ensure that the unikernels are not competing with other workloads on the same node.
-This approach also lends itself to edge environments where disk space and memeory are limited.
+This approach also lends itself to edge environments where disk space and memory are limited.
 
 A detailed setup and howto can be found [here]()
 
@@ -34,6 +34,15 @@ A detailed setup and howto can be found [here]()
 - Create a pod using the RuntimeClass
 - Deploy to your cluster
 
+### Update Podman
+
+Update the config and ucrun runtime in Podman
+
+```
+/usr/share/containers/containers.conf
+or
+/etc/containers/containers.conf
+```
 
 ### Usage
 
@@ -45,6 +54,15 @@ Clone this repo
 ```bash
 cd rust-ucrun
 make build 
+```
+
+### Examples
+
+Launch a redis unikernel with Podman
+
+```bash
+podman run --rm --runtime ucrun  -e "BASE_DIR=/home/lzuccarelli/Projects/redis-unikernel" 192.168.1.27:5000/unikernel-tracker:latest
+
 ```
 
 ### Testing
@@ -76,3 +94,21 @@ $ grcov . --binary-path ./target/debug/deps/ -s . -t html --branch --ignore-not-
 ```
 
 ### Coverage Overview
+
+### Troubleshooting
+
+```
+Error: OCI runtime error: ucrun: unknown version specified
+```
+execute the follwoing
+
+```
+podman info 
+```
+Check that the version of crun matches the version of crun installed
+
+If not then update the version of crun
+
+Navigate to https://github.com/containers/crun/releases
+
+Download and copy the binary to /usr/bin/

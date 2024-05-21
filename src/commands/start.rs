@@ -1,62 +1,127 @@
+use crate::api::schema::*;
+use crate::common::utils::*;
 use crate::runtime::crun::*;
-use anyhow::{ensure, Result};
+use anyhow::Result;
+use custom_logger::*;
+use serde::{Deserialize, Serialize};
+use std::env;
 use std::ffi::OsStr;
 use std::process::Command;
 
-pub fn start(args: &liboci_cli::Start, raw_args: &[impl AsRef<OsStr>]) -> Result<()> {
-    // auto detect arch
-    let arch_cmd = if cfg!(target_arch = "x86_64") {
-        "qemu-system-x86_64"
-    } else {
-        "qemu-system-arm64"
-    };
+#[derive(Serialize, Deserialize)]
+pub struct UnikernelConfig {
+    #[serde(rename = "kind")]
+    kind: String,
 
-    let arg = vec![
-        "-name",
-        &args.container_id,
-        "-machine",
-        "q35",
-        "-device",
-        "pcie-root-port,port=0x10,chassis=1,id=pci.1,bus=pcie.0,multifunction=on,addr=0x3",
-        "-device",
-        "pcie-root-port,port=0x11,chassis=2,id=pci.2,bus=pcie.0,addr=0x3.0x1",
-        "-device",
-        "pcie-root-port,port=0x12,chassis=3,id=pci.3,bus=pcie.0,addr=0x3.0x2",
-        "-device",
-        "virtio-scsi-pci,bus=pci.2,addr=0x0,id=scsi0",
-        "-device",
-        "scsi-hd,bus=scsi0.0,drive=hd0",
-        "-vga",
-        "none",
-        "-device",
-        "isa-debug-exit",
-        "-m",
-        "512M",
-        "-device",
-        "virtio-rng-pci",
-        "-machine",
-        "accel=kvm:tcg",
-        "-cpu",
-        "host",
-        "-no-reboot",
-        "-cpu",
-        "max",
-        "-drive",
-        "file=rootfs/image,format=raw,if=none,id=hd0",
-        "-device",
-        "virtio-net,bus=pci.3,addr=0x0,netdev=n0,mac=de:09:ec:88:42:a2",
-        "-netdev",
-        "user,id=n0,hostfwd=tcp::6379-:6379",
-        "-display",
-        "none",
-        "-serial",
-        "mon:stdio",
-    ];
-    let child = Command::new(arch_cmd).args(arg).spawn()?;
-    println!("pid: {:?}", child.id());
-    if child.stderr.is_some() {
-        println!("stderr: {:?}", child.stderr);
+    #[serde(rename = "apiVersion")]
+    api_version: String,
+
+    #[serde(rename = "spec")]
+    spec: Spec,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Spec {
+    #[serde(rename = "port")]
+    port: String,
+
+    #[serde(rename = "hostPort")]
+    host_port: String,
+
+    #[serde(rename = "env")]
+    env: Option<Vec<Env>>,
+
+    #[serde(rename = "memory")]
+    memory: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Env {
+    #[serde(rename = "NAME")]
+    name: String,
+
+    #[serde(rename = "VALUE")]
+    value: String,
+}
+
+pub fn start(
+    log: &Logging,
+    mut ep: EmbeddedParams,
+    args: &liboci_cli::Start,
+    raw_args: &[impl AsRef<OsStr>],
+) -> Result<()> {
+    log.info(&format!("starting container : {:#?}", args.container_id));
+    log.debug(&format!("container_manager {:#?}", ep.container_manager));
+
+    ep.container_id = args.container_id.clone();
+
+    crun(log, raw_args)?;
+
+    let config_path = get_config_path(log, ep.clone());
+    let config = std::fs::read_to_string(config_path.clone());
+
+    if config.as_ref().ok().is_some() {
+        let oci_config: OCIConfig = serde_json::from_str(&config.unwrap())?;
+        let envs = oci_config.process.env;
+        let service_name_pos = envs.iter().position(|e| e.contains("SERVICE_NAME"));
+        let port_pos = envs.iter().position(|e| e.contains("PORT"));
+
+        // set $HOME - this is extremely important for ops nanovm
+        env::set_var("HOME", ep.clone().home);
+
+        if service_name_pos.is_some() {
+            let service_name = envs[service_name_pos.unwrap()]
+                .split("=")
+                .collect::<Vec<&str>>()[1];
+            let port = envs[port_pos.unwrap()].split("=").collect::<Vec<&str>>()[1];
+
+            // start ops nanovm
+            let cmd = "ops".to_string();
+            let ops_args: Vec<&str>;
+            if port.is_empty() {
+                ops_args = vec![
+                    "instance",
+                    "create",
+                    &service_name,
+                    "-i",
+                    &service_name,
+                    "-t",
+                    "onprem",
+                ];
+            } else {
+                ops_args = vec![
+                    "instance",
+                    "create",
+                    &service_name,
+                    "-i",
+                    &service_name,
+                    "-p",
+                    &port,
+                    "-t",
+                    "onprem",
+                ];
+            }
+
+            let ops_nanovm = Command::new(cmd.clone()).args(ops_args).spawn()?;
+            //log.debug(&format!("ops instance started {:#?}", ops_nanovm.stdout));
+
+            if ops_nanovm.stderr.is_some() {
+                log.error(&format!(
+                    "ops instance not started : {:?}",
+                    ops_nanovm.stderr
+                ));
+            } else {
+                log.info(&format!("ops instance pid {:#?}", ops_nanovm.id()));
+                log.info("container & unikernel logs : ");
+            }
+        } else {
+            log.error("SERVICE_NAME & PORT not found in env unikernel not started");
+            return Ok(());
+        }
+    } else {
+        log.error("config.json not found unikernel not started");
+        return Ok(());
     }
-    crun(raw_args)?;
+
     Ok(())
 }
